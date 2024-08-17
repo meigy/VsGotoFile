@@ -2,9 +2,9 @@
 <VisualStudioProject
 	ProjectType="Visual C++"
 	Version="9.00"
-	Name="EnvDTE"
+	Name="VsOpenFile"
 	ProjectGUID="{26063E8C-56AF-4493-8D73-E8EEF5D4A8FA}"
-	RootNamespace="EnvDTE"
+	RootNamespace="VsOpenFile"
 	Keyword="Win32Proj"
 	TargetFrameworkVersion="196613"
 	>
@@ -166,7 +166,7 @@
 	</References>
 	<Files>
 		<File
-			RelativePath=".\EnvDTE.cpp"
+			RelativePath=".\VsOpenFile.cpp"
 			>
 		</File>
 	</Files>
