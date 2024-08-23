@@ -1,10 +1,16 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <comdef.h>
 #include <atlbase.h>
+#include <atlcom.h>
+#include <atlcomcli.h>
 #include <iostream> // 添加这一行
 #include <string> 
 #include <locale>
 #include <codecvt> // 添加这一行
+#include <fstream>
+#include <exception>
+#include "cmdline.h"
 
 // import EnvDTE
 #pragma warning(disable : 4278)
@@ -14,6 +20,7 @@
 #pragma warning(default : 4278)
 
 using namespace std;
+//using namespace cmdline;
 
 static int visual_studio_open_file(char const * filename, unsigned int line)
 {
@@ -22,7 +29,7 @@ static int visual_studio_open_file(char const * filename, unsigned int line)
 	result = ::CLSIDFromProgID(L"VisualStudio.DTE", &clsid);
 	if (FAILED(result))
 		return -1;
-
+        
 	CComPtr<IUnknown> punk;
 	result = ::GetActiveObject(clsid, NULL, &punk);
 	if (FAILED(result))
@@ -44,11 +51,11 @@ static int visual_studio_open_file(char const * filename, unsigned int line)
 		return -4;
 
     CComPtr<EnvDTE::Document> doc;
-    int maxtry = 3;
+    int maxtry = 5;
     do {        
         result = DTE->get_ActiveDocument(&doc);
         if (SUCCEEDED(result)) break;
-        Sleep(1000);
+        Sleep(500);
     } while (FAILED(result) && (0 < --maxtry));
 	if (FAILED(result))
 		return -5;
@@ -63,11 +70,157 @@ static int visual_studio_open_file(char const * filename, unsigned int line)
 	if (FAILED(result))
 		return -7;
 
-	result = selection->GotoLine(line, TRUE);
+    result = selection->GotoLine(line, TRUE);
 	if (FAILED(result))
 		return -8;
 
+    result = selection->SelectLine();
+    if (FAILED(result))
+        return -9;
+
+    /*
+    CComPtr<EnvDTE::DTE> pDTE;
+    punk->QueryInterface(IID_PPV_ARGS(&pDTE));
+    if (FAILED(result))
+        return -10;
+    */
+    
+    if (DTE) {
+        CComPtr<EnvDTE::Window> w;
+        DTE->get_MainWindow(&w);
+        if (FAILED(result))
+            return -10;
+
+        //w->put_WindowState(EnvDTE::vsWindowStateNormal);
+        w->put_Visible(TRUE);
+        w->Activate();
+        w->SetFocus();
+    }
+
 	return 0;
+}
+
+/*
+CComPtr<EnvDTE::DTE> GetVisualStudioInstance(const std::wstring& solutionName) {
+    CComPtr<IRunningObjectTable> pROT;
+    CComPtr<IEnumMoniker> pEnum;
+    CComPtr<IMoniker> pMoniker;
+    CComPtr<IBindCtx> pBindCtx;
+
+    HRESULT hr = GetRunningObjectTable(0, &pROT);
+    if (FAILED(hr)) return nullptr;
+
+    hr = CreateBindCtx(0, &pBindCtx);
+    if (FAILED(hr)) return nullptr;
+
+    hr = pROT->EnumRunning(&pEnum);
+    if (FAILED(hr)) return nullptr;
+
+    while (pEnum->Next(1, &pMoniker, nullptr) == S_OK) {
+        LPOLESTR displayName;
+        pMoniker->GetDisplayName(pBindCtx, nullptr, &displayName);
+        std::wstring name(displayName);
+        CoTaskMemFree(displayName);
+
+        if (name.find(L"VisualStudio.DTE") != std::wstring::npos) {
+            CComPtr<IUnknown> pUnk;
+            pROT->GetObject(pMoniker, &pUnk);
+            CComPtr<EnvDTE::DTE> pDTE2;
+            pUnk->QueryInterface(IID_PPV_ARGS(&pDTE2));
+
+            //pDTE2->get_Solution(&solution);
+            if (pDTE2 && pDTE2->Solution->FullName.bstrVal &&
+                std::wstring(pDTE2->Solution->FullName.bstrVal).find(solutionName) != std::wstring::npos) {
+                return pDTE2;
+            }
+        }
+    }
+    return nullptr;
+}
+*/
+
+int calculateLineNumber(const std::string& filePath, std::streampos offset) {
+    std::ifstream file(filePath);
+    if (!file.is_open()) {
+        std::cerr << "Error opening file." << std::endl;
+        return -1;
+    }
+
+    file.seekg(0, std::ios::beg); // 确保从文件开头开始
+    std::string line;
+    int lineNumber = 1;
+    std::streampos currentPos = 0;
+
+    while (std::getline(file, line)) {
+        currentPos = file.tellg();
+        if (currentPos >= offset) {
+            break;
+        }
+        lineNumber++;
+    }
+
+    file.close();
+    return lineNumber;
+}
+
+static int extractLeadingNumber(const std::string& str) {
+    size_t i = 0;
+    while (i < str.size() && std::isdigit(str[i])) {
+        ++i;
+    }
+    if (i == 0) {
+        throw std::invalid_argument("The string does not start with a number.");
+    }
+    return std::stoi(str.substr(0, i));
+}
+
+static int process(std::string sCmdLine) throw() {
+    std::string error;
+
+    cmdline::parser args;
+    args.add<int>("gotoline", 'l', "goto line", false, 1);
+    args.add<string>("select", 's', "select range", false, "1-1");  // 80, cmdline::range(1, 65535));
+    //args.add<string>("type", 't', "protocol type", false, "http", cmdline::oneof<string>("http", "https", "ssh", "ftp"));
+    //args.add("gzip", '\0', "gzip when transfer");
+    //args.add<string>("redirect", 'r', "redirect to", false, "");
+
+    if (!args.parse(sCmdLine)) {
+        error += args.usage();
+        throw std::runtime_error(error);
+    }
+
+    if (args.program_name().size() == 0) {
+        error += "missing target";
+        throw std::runtime_error(error);
+    }
+
+    std::string filePath = args.program_name();
+    int lineNum = 1;
+
+    if (args.exist("select")) {
+        int offset = extractLeadingNumber(args.get<string>("select"));
+        lineNum = calculateLineNumber(filePath, offset);
+    }
+
+    if (args.exist("gotoline")) {
+        lineNum = args.get<int>("gotoline");
+    }
+
+    int result = visual_studio_open_file(filePath.c_str(), lineNum);
+
+    if (0 != result)
+    {
+        error += "Failed to open file '";
+        error += filePath;
+        error += "' at line ";
+        error += std::to_string(lineNum);
+        error += ".";
+        error += "' code: ";
+        error += std::to_string(result);
+        throw std::runtime_error(error);
+    }
+
+    return 0;
 }
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
@@ -78,7 +231,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	//2 调用方法visual_studio_open_file打开文件跳转到行
 	//3 如果出现错误弹出错误原因提示
 	//4 过程异常处理，保证正确执行CoUninitialize
-	
+
+
+    /*
     // 解析lpCmdLine参数
     string cmdLine(lpCmdLine);
     cmdLine.erase(cmdLine.begin(), std::find_if(cmdLine.begin(), cmdLine.end(), [](int ch) {
@@ -114,8 +269,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     {
         filePath = filePath.substr(1, filePath.size() - 2);
     }
+    */
     
     // 调用visual_studio_open_file打开文件并跳转到行
+    /*
     int result = -100;
     try
     {
@@ -141,6 +298,23 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         errorMsg += L"' code: ";
         errorMsg += std::to_wstring(result);
         MessageBox(NULL, errorMsg.c_str(), L"Error", MB_OK | MB_ICONERROR);
+    }
+    */
+
+    try
+    {
+        int maxtry = 3;
+        while (maxtry-- > 0) {
+            if (0 == process(lpCmdLine)) break;
+        } 
+    }
+    catch (const std::exception& e)
+    {
+        std::string error = e.what();
+        std::wstring errorMsg = L"Exception occurred:  '";
+        errorMsg += std::wstring(error.begin(), error.end());
+        MessageBox(NULL, errorMsg.c_str(), L"Error", MB_OK | MB_ICONERROR);
+        //std::cerr << "Exception occurred: " << e.what() << std::endl;
     }
 
 	CoUninitialize();
